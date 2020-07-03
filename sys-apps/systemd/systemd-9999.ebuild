@@ -16,7 +16,7 @@ if [[ ${PV} == 9999 ]]; then
 	KEYWORDS="~amd64 ~arm64 ~arm ~x86"
 else
 	# Flatcar: Use cros setup
-	CROS_WORKON_COMMIT="171ebfdbcb79b1f42659d111b5a642e72ea02021" # v245-flatcar
+	CROS_WORKON_COMMIT="d74c3540c7b01126cf2881574da1664284ec3b41" # v245-flatcar
 	KEYWORDS="~alpha amd64 ~arm arm64 ~ia64 ~ppc ~ppc64 ~sparc ~x86"
 fi
 
@@ -29,7 +29,7 @@ PYTHON_COMPAT=( python3_{5,6,7} )
 # src_unpack from workon.
 inherit cros-workon
 
-inherit bash-completion-r1 linux-info meson multilib-minimal ninja-utils pam python-any-r1 systemd toolchain-funcs udev usr-ldscript
+inherit bash-completion-r1 linux-info meson multilib-minimal ninja-utils pam python-any-r1 systemd toolchain-funcs udev user
 
 DESCRIPTION="System and service manager for Linux"
 HOMEPAGE="https://www.freedesktop.org/wiki/Software/systemd"
@@ -39,7 +39,7 @@ SLOT="0/2"
 # Flatcar: Dropped cgroup-hybrid. We use legacy hierarchy by default
 # to keep docker working. Dropped static-libs, we don't care about
 # static libraries.
-IUSE="acl apparmor audit build cryptsetup curl dns-over-tls elfutils +gcrypt gnuefi homed http +hwdb idn importd +kmod +lz4 lzma nat pam pcre pkcs11 policykit pwquality qrcode repart +resolvconf +seccomp selinux +split-usr +sysv-utils test vanilla xkb"
+IUSE="acl apparmor audit build cryptsetup curl elfutils +gcrypt gnuefi homed http +hwdb idn importd +kmod +lz4 lzma nat pam pcre pkcs11 policykit pwquality qrcode repart +resolvconf +seccomp selinux +split-usr ssl +sysv-utils test vanilla xkb"
 
 REQUIRED_USE="
 	homed? ( cryptsetup )
@@ -58,13 +58,12 @@ COMMON_DEPEND=">=sys-apps/util-linux-2.30:0=[${MULTILIB_USEDEP}]
 	audit? ( >=sys-process/audit-2:0= )
 	cryptsetup? ( >=sys-fs/cryptsetup-2.0.1:0= )
 	curl? ( net-misc/curl:0= )
-	dns-over-tls? ( >=net-libs/gnutls-3.6.0:0= )
 	elfutils? ( >=dev-libs/elfutils-0.158:0= )
 	gcrypt? ( >=dev-libs/libgcrypt-1.4.5:0=[${MULTILIB_USEDEP}] )
 	homed? ( ${OPENSSL_DEP} )
 	http? (
-		>=net-libs/libmicrohttpd-0.9.33:0=[epoll(+)]
-		>=net-libs/gnutls-3.1.4:0=
+	   	>=net-libs/libmicrohttpd-0.9.33:0=
+	   	ssl? ( >=net-libs/gnutls-3.1.4:0= )
 	)
 	idn? ( net-dns/libidn2:= )
 	importd? (
@@ -85,36 +84,7 @@ COMMON_DEPEND=">=sys-apps/util-linux-2.30:0=[${MULTILIB_USEDEP}]
 	selinux? ( sys-libs/libselinux:0= )
 	xkb? ( >=x11-libs/libxkbcommon-0.4.1:0= )"
 
-# Newer linux-headers needed by ia64, bug #480218
-DEPEND="${COMMON_DEPEND}
-	>=sys-kernel/linux-headers-${MINKV}
-	gnuefi? ( >=sys-boot/gnu-efi-3.0.2 )
-"
-
-# baselayout-2.2 has /run
 RDEPEND="${COMMON_DEPEND}
-	acct-group/adm
-	acct-group/wheel
-	acct-group/kmem
-	acct-group/tty
-	acct-group/utmp
-	acct-group/audio
-	acct-group/cdrom
-	acct-group/dialout
-	acct-group/disk
-	acct-group/input
-	acct-group/kvm
-	acct-group/render
-	acct-group/tape
-	acct-group/video
-	acct-group/systemd-journal
-	acct-user/systemd-journal-remote
-	acct-user/systemd-coredump
-	acct-user/systemd-network
-	acct-user/systemd-resolve
-	acct-user/systemd-timesync
-	>=sys-apps/baselayout-2.2
-	selinux? ( sec-policy/selinux-base-policy[systemd] )
 	sysv-utils? ( !sys-apps/sysvinit )
 	!sysv-utils? ( sys-apps/sysvinit )
 	resolvconf? ( !net-dns/openresolv )
@@ -125,7 +95,6 @@ RDEPEND="${COMMON_DEPEND}
 	) )
 	!sys-auth/nss-myhostname
 	!sys-fs/eudev
-	!sys-fs/udev
 "
 
 # sys-apps/dbus: the daemon only (+ build-time lib dep for tests)
@@ -275,7 +244,6 @@ multilib_src_configure() {
 		-Daudit=$(meson_multilib_native_use audit)
 		-Dlibcryptsetup=$(meson_multilib_native_use cryptsetup)
 		-Dlibcurl=$(meson_multilib_native_use curl)
-		-Ddns-over-tls=$(meson_multilib_native_use dns-over-tls)
 		-Delfutils=$(meson_multilib_native_use elfutils)
 		-Dgcrypt=$(meson_use gcrypt)
 		-Dgnu-efi=$(meson_multilib_native_use gnuefi)
@@ -410,6 +378,8 @@ multilib_src_install_all() {
 	if ! use resolvconf && ! use sysv-utils; then
 		rmdir "${ED}${rootprefix}"/sbin || die
 	fi
+
+	rm -r "${ED}${rootprefix}"/lib/udev/hwdb.d || die
 
 	# Flatcar: Upstream uses keepdir commands to keep some empty
 	# directories.
@@ -554,6 +524,21 @@ pkg_preinst() {
 }
 
 pkg_postinst() {
+       newusergroup() {
+               enewgroup "$1"
+               enewuser "$1" -1 -1 -1 "$1"
+       }
+
+       enewgroup input
+       enewgroup kvm 78
+       enewgroup render
+       enewgroup systemd-journal
+       newusergroup systemd-coredump
+       newusergroup systemd-journal-remote
+       newusergroup systemd-network
+       newusergroup systemd-resolve
+       newusergroup systemd-timesync
+
 	systemd_update_catalog
 
 	# Keep this here in case the database format changes so it gets updated
